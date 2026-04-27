@@ -1,6 +1,6 @@
 {
   "name": "wyndr-api",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Wyndr dating app — Express/Socket.io API server",
   "private": true,
   "type": "module",
@@ -11,9 +11,7 @@
     "db:push": "drizzle-kit push --config ./drizzle.config.ts",
     "db:push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
   },
-  "engines": {
-    "node": ">=20"
-  },
+  "engines": { "node": ">=20" },
   "dependencies": {
     "@workspace/db": "file:./lib/db",
     "@workspace/api-zod": "file:./lib/api-zod",

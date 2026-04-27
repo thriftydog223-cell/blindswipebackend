@@ -5,66 +5,67 @@ import { requireAuthAndNotBanned as requireAuth } from "../middleware/auth";
 
 const router: IRouter = Router();
 
-function buildOrientationFilter(seekerGender: string, seekerOrientation: string) {
-  const g = seekerGender?.toLowerCase();
-  const o = seekerOrientation?.toLowerCase();
+/**
+ * Builds a SQL condition that enforces BIDIRECTIONAL orientation compatibility.
+ *
+ * Both conditions must be true for a candidate to appear:
+ *   1. The SEEKER wants the CANDIDATE  (based on seeker's orientation vs candidate's gender)
+ *   2. The CANDIDATE wants the SEEKER  (based on candidate's orientation vs seeker's gender)
+ *
+ * Orientation values stored: "heterosexual", "homosexual", "bisexual"
+ * Gender values stored:       "Man", "Woman", "Non-binary", "Other", "Prefer not to say"
+ *
+ * We use LOWER() everywhere so comparisons are case-insensitive.
+ */
+function buildCompatibilityFilter(
+  seekerGender: string | null | undefined,
+  seekerOrientation: string | null | undefined,
+) {
+  const g = (seekerGender ?? "").toLowerCase().trim();   // seeker's gender (lowercased)
+  const o = (seekerOrientation ?? "").toLowerCase().trim(); // seeker's orientation (lowercased)
 
-  if (!o || !g || o === "prefer_not_to_say" || o === "") return null;
+  // If we don't know the seeker's orientation, skip the filter (admin/incomplete profiles).
+  if (!g || !o || o === "prefer_not_to_say") return null;
+
+  // ------------------------------------------------------------------
+  // Part 1 — seeker wants the candidate
+  // ------------------------------------------------------------------
+  let seekerWantsCandidate: ReturnType<typeof sql>;
 
   if (o === "heterosexual" || o === "straight") {
-    const oppositeGender = g === "man" ? "Woman" : g === "woman" ? "Man" : null;
-    if (!oppositeGender) return null;
-    const seekerGenderNorm = g === "man" ? "Man" : "Woman";
-    return and(
-      eq(usersTable.gender, oppositeGender),
-      or(
-        eq(usersTable.sexualOrientation, "heterosexual"),
-        eq(usersTable.sexualOrientation, "bisexual"),
-        eq(usersTable.sexualOrientation, "Heterosexual"),
-        eq(usersTable.sexualOrientation, "Bisexual"),
-      )
-    );
+    // Seeker wants the opposite gender.
+    seekerWantsCandidate = sql`LOWER(${usersTable.gender}) != ${g} AND LOWER(${usersTable.gender}) != '' AND ${usersTable.gender} IS NOT NULL`;
+  } else if (o === "homosexual" || o === "gay" || o === "lesbian") {
+    // Seeker wants the same gender.
+    seekerWantsCandidate = sql`LOWER(${usersTable.gender}) = ${g} AND ${g} != ''`;
+  } else {
+    // Bisexual — seeker wants any gender.
+    seekerWantsCandidate = sql`true`;
   }
 
-  if (o === "homosexual" || o === "gay" || o === "lesbian") {
-    const sameGender = g === "man" ? "Man" : "Woman";
-    return and(
-      eq(usersTable.gender, sameGender),
-      or(
-        eq(usersTable.sexualOrientation, "homosexual"),
-        eq(usersTable.sexualOrientation, "bisexual"),
-        eq(usersTable.sexualOrientation, "Homosexual"),
-        eq(usersTable.sexualOrientation, "Bisexual"),
-      )
-    );
-  }
+  // ------------------------------------------------------------------
+  // Part 2 — candidate wants the seeker (checked against their stored orientation)
+  //
+  // "heterosexual/straight" → candidate wants someone of OPPOSITE gender to themselves
+  //   ↳ seeker's gender must differ from candidate's gender
+  //
+  // "homosexual/gay/lesbian" → candidate wants someone of the SAME gender as themselves
+  //   ↳ seeker's gender must equal candidate's gender
+  //
+  // "bisexual" → candidate wants any gender → always OK
+  // ------------------------------------------------------------------
+  const candidateWantsSeeker = sql`
+    CASE
+      WHEN LOWER(${usersTable.sexualOrientation}) IN ('heterosexual', 'straight')
+        THEN ${g} != LOWER(${usersTable.gender}) AND ${g} != '' AND ${usersTable.gender} IS NOT NULL
+      WHEN LOWER(${usersTable.sexualOrientation}) IN ('homosexual', 'gay', 'lesbian')
+        THEN ${g} = LOWER(${usersTable.gender}) AND ${g} != '' AND ${usersTable.gender} IS NOT NULL
+      ELSE
+        true
+    END
+  `;
 
-  if (o === "bisexual") {
-    const seekerGenderNorm = g === "man" ? "Man" : "Woman";
-    const oppositeGender = g === "man" ? "Woman" : "Man";
-    return or(
-      and(
-        eq(usersTable.gender, oppositeGender),
-        or(
-          eq(usersTable.sexualOrientation, "heterosexual"),
-          eq(usersTable.sexualOrientation, "bisexual"),
-          eq(usersTable.sexualOrientation, "Heterosexual"),
-          eq(usersTable.sexualOrientation, "Bisexual"),
-        )
-      ),
-      and(
-        eq(usersTable.gender, seekerGenderNorm),
-        or(
-          eq(usersTable.sexualOrientation, "homosexual"),
-          eq(usersTable.sexualOrientation, "bisexual"),
-          eq(usersTable.sexualOrientation, "Homosexual"),
-          eq(usersTable.sexualOrientation, "Bisexual"),
-        )
-      )
-    );
-  }
-
-  return null;
+  return sql`(${seekerWantsCandidate}) AND (${candidateWantsSeeker})`;
 }
 
 router.get("/discover", requireAuth, async (req, res) => {
@@ -89,8 +90,8 @@ router.get("/discover", requireAuth, async (req, res) => {
 
   const excludeIds = [userId, ...alreadySwiped.map((s) => s.swipedId)];
 
-  const orientationFilter = seeker
-    ? buildOrientationFilter(seeker.gender, seeker.sexualOrientation)
+  const compatibilityFilter = seeker
+    ? buildCompatibilityFilter(seeker.gender, seeker.sexualOrientation)
     : null;
 
   const minAge = seeker?.minAgePreference ?? 18;
@@ -107,45 +108,28 @@ router.get("/discover", requireAuth, async (req, res) => {
   const profileComplete = and(
     isNotNull(usersTable.age),
     isNotNull(usersTable.voiceClipUrl),
+    isNotNull(usersTable.gender),
+    isNotNull(usersTable.sexualOrientation),
     ne(usersTable.bio, ""),
     ne(usersTable.gender, ""),
     ne(usersTable.sexualOrientation, ""),
     sql`array_length(${usersTable.photos}, 1) > 0`,
   );
 
-  const filters = [baseExclude, notBanned, ageFilter, profileComplete, ...(orientationFilter ? [orientationFilter] : [])];
-  const whereClause = and(...filters);
+  const filters = [
+    baseExclude,
+    notBanned,
+    ageFilter,
+    profileComplete,
+    ...(compatibilityFilter ? [compatibilityFilter] : []),
+  ];
 
   const users = await db
     .select()
     .from(usersTable)
-    .where(whereClause)
+    .where(and(...filters))
     .orderBy(sql`RANDOM()`)
     .limit(limit);
-
-  const seekerG = seeker?.gender?.toLowerCase() ?? "";
-  const seekerO = seeker?.sexualOrientation?.toLowerCase() ?? "";
-
-  const compatibleCards = users.filter((u) => {
-    const candidateG = u.gender?.toLowerCase() ?? "";
-    const candidateO = u.sexualOrientation?.toLowerCase() ?? "";
-
-    let seekerWantsCandidate = true;
-    if (seekerO === "heterosexual" || seekerO === "straight") {
-      seekerWantsCandidate = candidateG !== seekerG && candidateG !== "";
-    } else if (seekerO === "homosexual" || seekerO === "gay" || seekerO === "lesbian") {
-      seekerWantsCandidate = candidateG === seekerG && candidateG !== "";
-    }
-
-    let candidateWantsSeeker = true;
-    if (candidateO === "heterosexual" || candidateO === "straight") {
-      candidateWantsSeeker = seekerG !== candidateG && seekerG !== "";
-    } else if (candidateO === "homosexual" || candidateO === "gay" || candidateO === "lesbian") {
-      candidateWantsSeeker = seekerG === candidateG && seekerG !== "";
-    }
-
-    return seekerWantsCandidate && candidateWantsSeeker;
-  });
 
   function activeLabel(d: Date | null | undefined): string | null {
     if (!d) return null;
@@ -155,7 +139,7 @@ router.get("/discover", requireAuth, async (req, res) => {
     return null;
   }
 
-  const cards = compatibleCards.map((u) => ({
+  const cards = users.map((u) => ({
     id: u.id,
     name: u.name || "Anonymous",
     age: u.age ?? null,

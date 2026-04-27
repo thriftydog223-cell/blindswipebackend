@@ -77,7 +77,7 @@ router.post("/auth/register", async (req, res) => {
   }
   const userAge = computeAgeFromDob(dob);
   if (userAge < 18) {
-    res.status(403).json({ error: "You must be 18 or older to use Blind Swipe" });
+    res.status(403).json({ error: "You must be 18 or older to use Wyndr" });
     return;
   }
   if (userAge > 120) {
