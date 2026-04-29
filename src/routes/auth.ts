@@ -118,7 +118,14 @@ router.post("/auth/register", async (req, res) => {
     return;
   }
 
-  sendEmailVerificationEmail(email.toLowerCase(), verificationCode).catch(() => {});
+  console.log("[DEBUG] About to call sendEmailVerificationEmail for:", email.toLowerCase());
+  try {
+    await sendEmailVerificationEmail(email.toLowerCase(), verificationCode);
+  } catch (error) {
+    console.error("[ERROR] sendEmailVerificationEmail failed:", error);
+    throw error;
+  }
+  console.log("[DEBUG] sendEmailVerificationEmail call completed");
 
   const token = signToken({ userId: user.id, email: user.email });
   res.status(201).json({ token, user: toPublicUser(user) });
@@ -326,7 +333,14 @@ router.post("/auth/forgot-password", async (req, res) => {
     expiresAt,
   });
 
-  await sendPasswordResetEmail(user.email, code);
+  console.log("[DEBUG] About to call sendPasswordResetEmail for:", user.email);
+  try {
+    await sendPasswordResetEmail(user.email, code);
+  } catch (error) {
+    console.error("[ERROR] sendPasswordResetEmail failed:", error);
+    throw error;
+  }
+  console.log("[DEBUG] sendPasswordResetEmail call completed");
 
   res.json({ message: "If that email is registered, a reset code has been sent." });
 });
